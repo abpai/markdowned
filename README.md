@@ -6,6 +6,8 @@ Export any webpage to clean Markdown with one click.
 
 The extension works fully offline. No server required.
 
+Markdowned is built for the common workflow where you find something useful and want clean Markdown fast, whether you are sharing with a person, pasting into a coding agent, or dropping context into tools like NotebookLM.
+
 ## Chrome Extension
 
 ### Install locally
@@ -24,8 +26,10 @@ Click the extension icon on any page. Markdown is extracted, copied to your clip
 
 ### Architecture
 
-- Extraction: [Readability](https://github.com/mozilla/readability)
+- Extraction: hybrid strategy using [Readability](https://github.com/mozilla/readability) plus a pruned main-content fallback for app-like pages
 - Conversion: [Turndown](https://github.com/mixmark-io/turndown)
+- Orchestration: MV3 service worker triggers export, injects content script when needed, and reports badge status
+- Naming: export filenames prefer readable titles and avoid UUID-like low-signal page titles
 - Runtime: browser-only (no server required for Markdown export)
 
 ## Scripts
