@@ -1,0 +1,24 @@
+[
+  {
+    "name": "prefers readability title when page title is uuid",
+    "input": {
+      "preferredTitle": "78707ff8-9aff-4332-942f-3684d019d315",
+      "readabilityTitle": "Google Gemini",
+      "documentTitle": "78707ff8-9aff-4332-942f-3684d019d315",
+      "url": "https://gemini.google.com/app/78707ff8-9aff-4332-942f-3684d019d315"
+    },
+    "expectedTitle": "Google Gemini",
+    "expectedFileNamePrefix": "google-gemini-"
+  },
+  {
+    "name": "falls back to hostname when titles are low signal",
+    "input": {
+      "preferredTitle": "6bff2bb8-9bd2-4f4f-b95b-18b98b2e905a",
+      "readabilityTitle": "",
+      "documentTitle": "Untitled Page",
+      "url": "https://gemini.google.com/app"
+    },
+    "expectedTitle": "gemini.google.com",
+    "expectedFileNamePrefix": "geminigooglecom-"
+  }
+]
