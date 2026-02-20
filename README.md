@@ -10,7 +10,9 @@ Markdowned is built for the common workflow where you find something useful and 
 
 ## Chrome Extension
 
-### Install locally
+### Install locally (unpacked)
+
+Markdowned is not published on the Chrome Web Store yet, so load it as an unpacked extension:
 
 1. Build the extension:
    ```bash
@@ -18,7 +20,8 @@ Markdowned is built for the common workflow where you find something useful and 
    ```
 2. Open `chrome://extensions`
 3. Enable Developer mode
-4. Click Load unpacked and select `extension/`
+4. Click **Load unpacked** and select `extension/`
+5. After making code changes, run `bun run build:extension` again and click **Reload** on the extension card
 
 ### Usage
 
