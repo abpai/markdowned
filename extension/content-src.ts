@@ -1,5 +1,6 @@
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
+import { buildExportFileName, selectExportTitle, UNTITLED_PAGE } from './export-metadata.ts'
 
 const EXPORT_PAGE_MARKDOWN = 'EXPORT_PAGE_MARKDOWN' as const
 const DEFAULT_EXPORT_ERROR_MESSAGE = 'Failed to export page as markdown.'
@@ -21,13 +22,61 @@ type ExportResponse =
     }
   | { ok: false; error: string }
 type ExportSuccessResponse = Extract<ExportResponse, { ok: true }>
+type ExtractedContent = {
+  title: string
+  html: string
+  text: string
+  readabilityTitle: string
+  documentTitle: string
+}
 
 const MAX_URL_LENGTH = 2_048
-const MAX_TITLE_LENGTH = 120
-const MAX_FILE_NAME_LENGTH = 120
 const TOAST_DURATION_MS = 2500
 const EXPORTED_TOAST_TEXT = '✅ Copied & downloaded.'
 const TOAST_ID = 'markdowned-toast'
+const MAIN_CONTENT_SELECTORS = ['main', '[role="main"]', 'article', '#main', '.main'] as const
+const APP_STRUCTURE_HINT_SELECTORS = [
+  '[data-testid*="message" i]',
+  '[class*="message" i]',
+  '[class*="chat" i]',
+  '[class*="conversation" i]',
+  '[class*="response" i]',
+] as const
+const NOISE_SELECTORS = [
+  'script',
+  'style',
+  'noscript',
+  'nav',
+  'header',
+  'footer',
+  'aside',
+  '[role="navigation"]',
+  '[role="banner"]',
+  '[role="complementary"]',
+  '[aria-hidden="true"]',
+  '[hidden]',
+  '[class*="sidebar" i]',
+  '[class*="sidenav" i]',
+  '[class*="toolbar" i]',
+  '[class*="tooltip" i]',
+  '[class*="sr-only" i]',
+] as const
+const INTERACTIVE_ELEMENT_SELECTOR = 'button, a, input, textarea, select, [role="button"]'
+const MAIN_CONTENT_INTERACTIVE_PRUNE_SELECTOR =
+  'button, input, textarea, select, [role="button"], [aria-label*="menu" i]'
+const HIDDEN_STYLE_MARKERS = ['display:none', 'visibility:hidden', 'opacity:0'] as const
+const APP_SIGNAL_THRESHOLDS = {
+  buttonCount: 20,
+  interactiveCount: 30,
+  appStructureCount: 2,
+} as const
+const CONTENT_QUALITY_THRESHOLDS = {
+  appModeRatio: 1.35,
+  shortReadabilityLength: 350,
+  substantialMainLength: 600,
+  strongMainRatio: 1.8,
+  interactiveOnlyTextLength: 60,
+} as const
 
 const sanitizeText = (value: string): string => {
   return value.replace(/\s+/g, ' ').trim()
@@ -35,19 +84,6 @@ const sanitizeText = (value: string): string => {
 
 const normalizeText = (value: string | null | undefined): string => {
   return value ? sanitizeText(value) : ''
-}
-
-const sanitizeFileName = (value: string): string => {
-  const name = normalizeText(value).toLowerCase()
-  const cleaned = name
-    .replace(/[^a-z0-9\s-_]/gi, '')
-    .replace(/[\s_]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-
-  const base = cleaned || 'markdowned-page'
-  const truncated = base.slice(0, MAX_FILE_NAME_LENGTH).trim().replace(/-+$/, '')
-  return `${truncated || 'markdowned-page'}.md`
 }
 
 const isExportRequest = (message: unknown): message is ExportRequest => {
@@ -77,14 +113,191 @@ const createMarkdownConverter = () => {
   })
 }
 
-const buildMarkdown = (
-  article: ReturnType<Readability['parse']>,
-  url: string,
-  extractedAt: string,
-): string => {
+const getDocumentTitle = (): string => {
+  return normalizeText(document.title || UNTITLED_PAGE)
+}
+
+const getMainContentRoot = (): globalThis.Element => {
+  for (const selector of MAIN_CONTENT_SELECTORS) {
+    const candidate = document.querySelector(selector)
+    if (candidate instanceof globalThis.Element) {
+      return candidate
+    }
+  }
+
+  return document.body
+}
+
+const getSelectorMatchCount = (
+  root: globalThis.Document | globalThis.Element,
+  selectors: readonly string[],
+): number => {
+  return selectors.reduce((total, selector) => total + root.querySelectorAll(selector).length, 0)
+}
+
+const getAppSignalScore = (root: globalThis.Element): number => {
+  const buttonCount = root.querySelectorAll('button').length
+  const interactiveCount = root.querySelectorAll(INTERACTIVE_ELEMENT_SELECTOR).length
+  const paragraphCount = root.querySelectorAll('p').length
+  const editableCount = root.querySelectorAll('textarea, [contenteditable="true"]').length
+  const appStructureCount = getSelectorMatchCount(root, APP_STRUCTURE_HINT_SELECTORS)
+
+  let score = 0
+
+  if (buttonCount >= APP_SIGNAL_THRESHOLDS.buttonCount) {
+    score += 1
+  }
+
+  if (
+    interactiveCount >= APP_SIGNAL_THRESHOLDS.interactiveCount &&
+    interactiveCount > paragraphCount * 2
+  ) {
+    score += 1
+  }
+
+  if (editableCount > 0) {
+    score += 1
+  }
+
+  if (appStructureCount >= APP_SIGNAL_THRESHOLDS.appStructureCount) {
+    score += 1
+  }
+
+  return score
+}
+
+const hasHiddenInlineStyle = (element: globalThis.Element): boolean => {
+  const style = element.getAttribute('style')?.toLowerCase() || ''
+  return HIDDEN_STYLE_MARKERS.some((marker) => style.includes(marker))
+}
+
+const isLikelyInteractiveOnlyContainer = (element: globalThis.Element): boolean => {
+  if (element.children.length === 0) {
+    return false
+  }
+
+  const textLength = normalizeText(element.textContent).length
+  const interactiveDescendants = element.querySelectorAll(INTERACTIVE_ELEMENT_SELECTOR).length
+  const blockDescendants = element.querySelectorAll('p, li, pre, blockquote').length
+
+  return (
+    textLength < CONTENT_QUALITY_THRESHOLDS.interactiveOnlyTextLength &&
+    interactiveDescendants > 0 &&
+    blockDescendants === 0
+  )
+}
+
+const pruneAppContentClone = (rootClone: globalThis.Element): void => {
+  rootClone.querySelectorAll(NOISE_SELECTORS.join(',')).forEach((element) => element.remove())
+  rootClone
+    .querySelectorAll(MAIN_CONTENT_INTERACTIVE_PRUNE_SELECTOR)
+    .forEach((element) => element.remove())
+
+  rootClone.querySelectorAll('*').forEach((element) => {
+    if (hasHiddenInlineStyle(element)) {
+      element.remove()
+      return
+    }
+
+    if (isLikelyInteractiveOnlyContainer(element)) {
+      element.remove()
+    }
+  })
+}
+
+const getReadabilityCandidate = (): ExtractedContent | null => {
+  const article = getReadableArticle()
+  const text = normalizeText(article?.textContent)
+  const html = article?.content || ''
+  const documentTitle = getDocumentTitle() || UNTITLED_PAGE
+
+  if (!html || text.length === 0) {
+    return null
+  }
+
+  const title = normalizeText(article?.title || document.title || UNTITLED_PAGE)
+
+  return {
+    title,
+    html,
+    text,
+    readabilityTitle: title,
+    documentTitle,
+  }
+}
+
+const getMainContentCandidate = (): ExtractedContent | null => {
+  const sourceRoot = getMainContentRoot()
+  const rootClone = sourceRoot.cloneNode(true)
+  if (!(rootClone instanceof globalThis.Element)) {
+    return null
+  }
+
+  pruneAppContentClone(rootClone)
+
+  const html = rootClone.innerHTML.trim()
+  const text = normalizeText(rootClone.textContent)
+  if (!html || text.length === 0) {
+    return null
+  }
+
+  return {
+    title: getDocumentTitle() || UNTITLED_PAGE,
+    html,
+    text,
+    readabilityTitle: '',
+    documentTitle: getDocumentTitle() || UNTITLED_PAGE,
+  }
+}
+
+const selectExtractionCandidate = (): ExtractedContent => {
+  const readability = getReadabilityCandidate()
+  const mainContent = getMainContentCandidate()
+  const singleCandidate = readability || mainContent
+  if (!readability || !mainContent) {
+    if (singleCandidate) {
+      return singleCandidate
+    }
+
+    return {
+      title: getDocumentTitle() || UNTITLED_PAGE,
+      html: document.documentElement?.outerHTML || '',
+      text: normalizeText(document.body?.innerText || document.body?.textContent),
+      readabilityTitle: '',
+      documentTitle: getDocumentTitle() || UNTITLED_PAGE,
+    }
+  }
+
+  const mainRoot = getMainContentRoot()
+  const appSignalScore = getAppSignalScore(mainRoot)
+  const readabilityTextLength = readability.text.length
+  const mainTextLength = mainContent.text.length
+
+  if (
+    appSignalScore >= APP_SIGNAL_THRESHOLDS.appStructureCount &&
+    mainTextLength > readabilityTextLength * CONTENT_QUALITY_THRESHOLDS.appModeRatio
+  ) {
+    return mainContent
+  }
+
+  if (
+    readabilityTextLength < CONTENT_QUALITY_THRESHOLDS.shortReadabilityLength &&
+    mainTextLength > CONTENT_QUALITY_THRESHOLDS.substantialMainLength
+  ) {
+    return mainContent
+  }
+
+  if (mainTextLength > readabilityTextLength * CONTENT_QUALITY_THRESHOLDS.strongMainRatio) {
+    return mainContent
+  }
+
+  return readability
+}
+
+const buildMarkdown = (content: ExtractedContent, url: string, extractedAt: string): string => {
   const turndown = createMarkdownConverter()
-  const markdownTitle = sanitizeText(article?.title || document.title || 'Untitled Page')
-  const markdownBodySource = article?.content || document.documentElement?.outerHTML || ''
+  const markdownTitle = sanitizeText(content.title || document.title || UNTITLED_PAGE)
+  const markdownBodySource = content.html || document.documentElement?.outerHTML || ''
   const markdownBody = turndown.turndown(markdownBodySource)
 
   return [
@@ -124,12 +337,6 @@ const copyToClipboard = async (markdown: string): Promise<void> => {
   }
 
   await navigator.clipboard.writeText(markdown)
-}
-
-const buildTitle = (article: ReturnType<Readability['parse']>): string => {
-  const normalizedTitle = normalizeText(article?.title || document.title || 'Untitled Page')
-  const truncatedTitle = normalizedTitle.slice(0, MAX_TITLE_LENGTH)
-  return truncatedTitle || 'Untitled Page'
 }
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
@@ -177,13 +384,18 @@ const showToast = (message: string, isError = false): void => {
 }
 
 const buildPayload = (
-  article: ReturnType<Readability['parse']>,
+  content: ExtractedContent,
   url: string,
   markdown: string,
   extractedAt: string,
 ): ExportSuccessResponse => {
-  const title = buildTitle(article)
-  const fileName = sanitizeFileName(`${title}-${extractedAt.slice(0, 10)}`)
+  const title = selectExportTitle({
+    preferredTitle: content.title,
+    readabilityTitle: content.readabilityTitle,
+    documentTitle: content.documentTitle,
+    url,
+  })
+  const fileName = buildExportFileName(title, extractedAt)
 
   return {
     ok: true,
@@ -219,10 +431,10 @@ chrome.runtime.onMessage.addListener(
           throw new Error('Current URL is too long to export safely.')
         }
 
-        const article = getReadableArticle()
+        const content = selectExtractionCandidate()
         const extractedAt = new Date().toISOString()
-        const markdown = buildMarkdown(article, url, extractedAt)
-        const payload = buildPayload(article, url, markdown, extractedAt)
+        const markdown = buildMarkdown(content, url, extractedAt)
+        const payload = buildPayload(content, url, markdown, extractedAt)
 
         await copyToClipboard(markdown)
         downloadMarkdown(markdown, payload.payload.fileName)
