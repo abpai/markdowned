@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Markdowned",
   "description": "One-click export of any webpage to clean Markdown — instantly copied to clipboard and saved as a .md file.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "action": {
     "default_title": "Export page to Markdown",
     "default_icon": {

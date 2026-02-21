@@ -33,6 +33,7 @@ type ExtractedContent = {
 const MAX_URL_LENGTH = 2_048
 const TOAST_DURATION_MS = 2500
 const EXPORTED_TOAST_TEXT = '✅ Copied & downloaded.'
+const CLIPBOARD_FALLBACK_TOAST_TEXT = '📁 File saved. Clipboard copy was unavailable.'
 const TOAST_ID = 'markdowned-toast'
 const MAIN_CONTENT_SELECTORS = ['main', '[role="main"]', 'article', '#main', '.main'] as const
 const APP_STRUCTURE_HINT_SELECTORS = [
@@ -331,12 +332,38 @@ const downloadMarkdown = (markdown: string, fileName: string): void => {
   URL.revokeObjectURL(objectUrl)
 }
 
-const copyToClipboard = async (markdown: string): Promise<void> => {
-  if (!navigator.clipboard?.writeText) {
-    throw new Error('Clipboard API unavailable in this context.')
+const copyToClipboard = async (markdown: string): Promise<boolean> => {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(markdown)
+      return true
+    } catch {
+      // Fallback for cases like "Document is not focused" on intermittent tab contexts.
+    }
   }
 
-  await navigator.clipboard.writeText(markdown)
+  if (!document.body) {
+    return false
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = markdown
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  try {
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
 }
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
@@ -436,9 +463,9 @@ chrome.runtime.onMessage.addListener(
         const markdown = buildMarkdown(content, url, extractedAt)
         const payload = buildPayload(content, url, markdown, extractedAt)
 
-        await copyToClipboard(markdown)
+        const copied = await copyToClipboard(markdown)
         downloadMarkdown(markdown, payload.payload.fileName)
-        showToast(EXPORTED_TOAST_TEXT)
+        showToast(copied ? EXPORTED_TOAST_TEXT : CLIPBOARD_FALLBACK_TOAST_TEXT)
 
         sendResponse(payload)
       } catch (error) {
