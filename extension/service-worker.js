@@ -47,10 +47,7 @@ const getErrorMessage = (error, fallback) => (error instanceof Error ? error.mes
 const setBadge = async (tabId, { text, color, title }) => {
   await chrome.action.setBadgeText({ tabId, text })
   await chrome.action.setBadgeBackgroundColor({ tabId, color })
-
-  if (title) {
-    await chrome.action.setTitle({ tabId, title })
-  }
+  await chrome.action.setTitle({ tabId, title })
 }
 
 const clearBadgeLater = (tabId) => {
